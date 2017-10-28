@@ -1,6 +1,8 @@
 package org.maxgamer.configgle.config;
 
 import org.maxgamer.configgle.parser.Parser;
+import org.maxgamer.configgle.parser.StandardParsers;
+import org.maxgamer.configgle.util.TypeUtil;
 
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -16,14 +18,18 @@ import java.util.Scanner;
  * @author netherfoam
  */
 public class ConfigProxy implements InvocationHandler {
-    private Map<Class<?>, Parser<?>> parsers = new HashMap<>();
+    private Map<Class<?>, Parser<?>> parsers = new HashMap<>(StandardParsers.getParsers());
     private Scanner scanner;
     private PrintStream out;
     private Map<PreviousInvocation, PreviousResult> previous = new HashMap<>();
 
-    public ConfigProxy(InputStream in, OutputStream out) {
+    public ConfigProxy(InputStream in, OutputStream out, Parser... extraParsers) {
         this.scanner = new Scanner(in);
         this.out = new PrintStream(out);
+
+        for (Parser<?> parser : extraParsers) {
+            this.parsers.put(parser.type(), parser);
+        }
     }
 
     public Object invoke(Object o, Method method, Object[] args) throws Throwable {
@@ -42,16 +48,14 @@ public class ConfigProxy implements InvocationHandler {
 
         // We are asking for a new question
 
-        //do {
-            try {
-                Object r = ask(method);
-                result = new PreviousResult(r, null);
-            } catch (Exception f) {
-                result = new PreviousResult(null, f);
+        try {
+            Object r = ask(method);
+            result = new PreviousResult(r, null);
+        } catch (Exception f) {
+            result = new PreviousResult(null, f);
 
-                out.println(f.getClass().getSimpleName() + ": " + f.getMessage());
-            }
-        //} while (result.exception != null);
+            out.println(f.getClass().getSimpleName() + ": " + f.getMessage());
+        }
 
         // Save the answer for later
         previous.put(invocation, result);
@@ -63,63 +67,27 @@ public class ConfigProxy implements InvocationHandler {
         return result.result;
     }
 
-    public Object ask(Method method) {
+    private Object ask(Method method) {
         Question question = method.getAnnotation(Question.class);
         String q = question.value();
 
-        out.print(q + ": ");
-        out.println();
-        out.flush();
-
         Class<?> type = method.getReturnType();
-
-
-        if(type.isAssignableFrom(String.class)) {
-            return scanner.nextLine();
+        if (type.isPrimitive()) {
+            // int -> Integer, boolean -> Boolean etc.
+            type = TypeUtil.box(type);
         }
 
-        try {
-            if (type.isAssignableFrom(Long.class) || type.isAssignableFrom(long.class)) {
-                return scanner.nextLong();
-            }
+        Parser<?> parser = parsers.get(type);
 
-            if (type.isAssignableFrom(Integer.class) || type.isAssignableFrom(int.class)) {
-                return scanner.nextInt();
-            }
-
-            if (type.isAssignableFrom(Short.class) || type.isAssignableFrom(short.class)) {
-                return scanner.nextShort();
-            }
-
-            if (type.isAssignableFrom(Byte.class) || type.isAssignableFrom(byte.class)) {
-                return scanner.nextByte();
-            }
-
-            if (type.isAssignableFrom(Double.class) || type.isAssignableFrom(double.class)) {
-                return scanner.nextFloat();
-            }
-
-            if (type.isAssignableFrom(Float.class) || type.isAssignableFrom(float.class)) {
-                return scanner.nextFloat();
-            }
-
-            if (type.isAssignableFrom(Boolean.class) || type.isAssignableFrom(boolean.class)) {
-                // y/n works also
-                String word = scanner.next();
-                if ("yes".startsWith(word.toLowerCase())) {
-                    return true;
-                } else if ("no".startsWith(word.toLowerCase())) {
-                    return false;
-                }
-
-                return Boolean.parseBoolean(word);
-            }
-        } finally {
-            // Clears the rest of the current line because we don't want some crap empty input
-            scanner.nextLine();
+        if(parser == null) {
+            throw new IllegalStateException("I can't give you back a " + type + " from user input");
         }
 
-        throw new IllegalStateException("I can't give you back a " + type + " from user input");
+        out.print(q + ": ");
+        out.flush();
+        String line = scanner.nextLine();
+
+        return parser.parse(line);
     }
 
     public static class PreviousInvocation {

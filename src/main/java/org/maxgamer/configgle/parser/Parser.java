@@ -5,6 +5,11 @@ import org.maxgamer.configgle.exception.IncompleteException;
 /**
  * @author netherfoam
  */
-public interface Parser<T> {
-    T parse(String input) throws IncompleteException;
+public abstract class Parser<T> {
+    public abstract T parse(String input) throws IncompleteException;
+    public abstract Class<T> type();
+
+    public String hint() {
+        return type().getSimpleName();
+    }
 }

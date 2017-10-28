@@ -20,7 +20,6 @@ public class TypeUtil {
         TYPES.put(boolean.class, Boolean.class);
     }
 
-
     public static Class<?> box(Class<?> primitive) {
         if (!primitive.isPrimitive()) throw new IllegalArgumentException(primitive + " is not a primitive type");
 
