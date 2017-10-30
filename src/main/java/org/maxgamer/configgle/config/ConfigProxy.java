@@ -1,5 +1,6 @@
 package org.maxgamer.configgle.config;
 
+import org.maxgamer.configgle.exception.IncompleteException;
 import org.maxgamer.configgle.parser.Parser;
 import org.maxgamer.configgle.parser.StandardParsers;
 import org.maxgamer.configgle.util.TypeUtil;
@@ -9,6 +10,7 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.lang.reflect.Type;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
@@ -18,27 +20,28 @@ import java.util.Scanner;
  * @author netherfoam
  */
 public class ConfigProxy implements InvocationHandler {
-    private Map<Class<?>, Parser<?>> parsers = new HashMap<>(StandardParsers.getParsers());
+    private Map<Type, Parser<?>> parsers = new HashMap<>(StandardParsers.getParsers());
     private Scanner scanner;
     private PrintStream out;
     private Map<PreviousInvocation, PreviousResult> previous = new HashMap<>();
 
-    public ConfigProxy(InputStream in, OutputStream out, Parser... extraParsers) {
+    public ConfigProxy(InputStream in, OutputStream out, Map<Type, Parser<?>> extraParsers) {
         this.scanner = new Scanner(in);
         this.out = new PrintStream(out);
-
-        for (Parser<?> parser : extraParsers) {
-            this.parsers.put(parser.type(), parser);
-        }
+        this.parsers.putAll(extraParsers);
     }
 
     public Object invoke(Object o, Method method, Object[] args) throws Throwable {
         if (method.getDeclaringClass().equals(Object.class)) {
+            // Method invoked on Object.class, we don't proxy these methods. Otherwise, we'd
+            // break a whole bunch of things like hashCode() or equals()!
             return method.invoke(o, args);
         }
 
+        // Create our invocation object
         PreviousInvocation invocation = new PreviousInvocation(method, args);
 
+        // Look for a previous result
         PreviousResult result = previous.get(invocation);
         if(result != null) {
             if(result.exception != null) throw result.exception;
@@ -46,16 +49,17 @@ public class ConfigProxy implements InvocationHandler {
             return result.result;
         }
 
-        // We are asking for a new question
+        // We are asking a new question
+        do {
+            try {
+                Object r = ask(method);
+                result = new PreviousResult(r);
+            } catch (Exception f) {
+                result = new PreviousResult(f);
 
-        try {
-            Object r = ask(method);
-            result = new PreviousResult(r, null);
-        } catch (Exception f) {
-            result = new PreviousResult(null, f);
-
-            out.println(f.getClass().getSimpleName() + ": " + f.getMessage());
-        }
+                out.println(f.getClass().getSimpleName() + ": " + f.getMessage());
+            }
+        } while (result.exception instanceof IllegalArgumentException);
 
         // Save the answer for later
         previous.put(invocation, result);
@@ -71,10 +75,10 @@ public class ConfigProxy implements InvocationHandler {
         Question question = method.getAnnotation(Question.class);
         String q = question.value();
 
-        Class<?> type = method.getReturnType();
-        if (type.isPrimitive()) {
+        Type type = method.getGenericReturnType();
+        if (type instanceof Class && ((Class) type).isPrimitive()) {
             // int -> Integer, boolean -> Boolean etc.
-            type = TypeUtil.box(type);
+            type = TypeUtil.box((Class) type);
         }
 
         Parser<?> parser = parsers.get(type);
@@ -85,9 +89,17 @@ public class ConfigProxy implements InvocationHandler {
 
         out.print(q + ": ");
         out.flush();
-        String line = scanner.nextLine();
 
-        return parser.parse(line);
+        String input = scanner.nextLine();
+
+        while (true) {
+            try {
+                return parser.parse(input);
+            } catch (IncompleteException e) {
+                // Try append the next line for the next parse
+                input = input + "\n" + scanner.nextLine();
+            }
+        }
     }
 
     public static class PreviousInvocation {
@@ -121,12 +133,17 @@ public class ConfigProxy implements InvocationHandler {
     }
 
     public static class PreviousResult {
-        private Object result;
-        private Exception exception;
+        private final Exception exception;
+        private final Object result;
 
-        public PreviousResult(Object result, Exception exception) {
+        public PreviousResult(Object result) {
             this.result = result;
+            this.exception = null;
+        }
+
+        public PreviousResult(Exception exception) {
             this.exception = exception;
+            this.result = null;
         }
 
         @Override
